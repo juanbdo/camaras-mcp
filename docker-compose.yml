@@ -1,0 +1,94 @@
+# ===========================================================================
+# Demo MCP - Cámaras / Aforo
+# Todos los contenedores quedan agrupados bajo el proyecto "mcp-demo".
+#   Levantar:  docker compose up -d --build
+#   Detener:   docker compose down        (agrega -v para borrar los datos)
+# ===========================================================================
+name: mcp-demo
+
+services:
+  # --- Motor de base de datos ---------------------------------------------
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: mcp-demo-sqlserver
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"            # Edición gratuita, sin problema de licencias
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD}"
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      # Comprobación TCP: no depende de que la imagen traiga sqlcmd.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1433' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - mcp-net
+
+  # --- Inicialización de datos (one-shot) ---------------------------------
+  db-init:
+    image: mcr.microsoft.com/mssql-tools:latest
+    container_name: mcp-demo-db-init
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      MSSQL_SA_PASSWORD: "${MSSQL_SA_PASSWORD}"
+      MSSQL_DB: "${MSSQL_DB}"
+    entrypoint: ["/bin/bash", "/init/init.sh"]
+    volumes:
+      - ./db/init:/init:ro
+      - ./db/sql:/sql:ro
+    restart: "no"
+    networks:
+      - mcp-net
+
+  # --- Herramienta web de acceso a la BD ----------------------------------
+  adminer:
+    image: adminer:latest
+    container_name: mcp-demo-adminer
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    environment:
+      ADMINER_DEFAULT_SERVER: sqlserver
+    ports:
+      - "8080:8080"
+    networks:
+      - mcp-net
+
+  # --- API FastAPI + servidor MCP -----------------------------------------
+  api:
+    build:
+      context: ./api
+    container_name: mcp-demo-api
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    environment:
+      DB_HOST: "${DB_HOST}"
+      DB_PORT: "${DB_PORT}"
+      DB_USER: "${DB_USER}"
+      DB_PASSWORD: "${DB_PASSWORD}"
+      DB_NAME: "${DB_NAME}"
+      JWT_SECRET: "${JWT_SECRET}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM}"
+      JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES}"
+      DEMO_USERS: "${DEMO_USERS}"
+    ports:
+      - "8000:8000"
+    networks:
+      - mcp-net
+
+volumes:
+  mssql-data:
+
+networks:
+  mcp-net:
+    driver: bridge
